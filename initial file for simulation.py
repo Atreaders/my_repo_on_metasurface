@@ -1,60 +1,104 @@
+import tidy3d as td
 import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-def generate_openscad_script(filename="silicon_pillars.scad"):
-    # Parameters
-    pillar_diameter = 5  # microns
-    pillar_radius = pillar_diameter / 2
-    pillar_height = 1  # microns
-    num_pillars = 100
-    grid_size = int(np.sqrt(num_pillars))
-    spacing = 10  # microns
-    substrate_thickness = 10  # microns
-    substrate_size = 105  # microns (square 105x105)
-    
-    with open(filename, "w") as f:
-        # Create SiO2 Substrate
-        f.write(f"cube([{substrate_size}, {substrate_size}, {substrate_thickness}]);\n")
-        
-        # Create the Si pillars in a grid
-        for i in range(grid_size):
-            for j in range(grid_size):
-                x = i * spacing + spacing / 2
-                y = j * spacing + spacing / 2
-                f.write(f"translate([{x}, {y}, {substrate_thickness}]) cylinder(h={pillar_height}, r={pillar_radius}, center=false);\n")
-    
-    print(f"OpenSCAD script saved as {filename}")
+# Define constants
+um = 1e-6  # Micron conversion
+wavelength = 1.55 * um  # 1550 nm in microns
 
-def plot_pillars():
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    
-    # Define substrate
-    substrate_x = [0, 0, 105, 105]
-    substrate_y = [0, 105, 105, 0]
-    substrate_z = [0, 0, 0, 0]
-    verts = [list(zip(substrate_x, substrate_y, substrate_z))]
-    ax.add_collection3d(Poly3DCollection(verts, alpha=0.3, facecolor='gray'))
-    
-    # Create pillars
-    grid_size = int(np.sqrt(100))
-    spacing = 10
-    for i in range(grid_size):
-        for j in range(grid_size):
-            x = i * spacing + spacing / 2
-            y = j * spacing + spacing / 2
-            ax.bar3d(x, y, 10, 5, 5, 1, shade=True, color='red')
-    
-    ax.set_xlim([0, 105])
-    ax.set_ylim([0, 105])
-    ax.set_zlim([0, 12])
-    ax.set_xlabel("X (microns)")
-    ax.set_ylabel("Y (microns)")
-    ax.set_zlabel("Height (microns)")
-    ax.set_title("3D Visualization of Silicon Pillars on SiO2 Substrate")
-    
-    plt.show()
+# Define materials
+Si = td.Medium(permittivity=3.45**2)  # Silicon
+SiO2 = td.Medium(permittivity=1.44**2)  # Silica (SiO2)
 
-generate_openscad_script()
-plot_pillars()
+# Define geometry
+substrate = td.Structure(
+    geometry=td.Box(center=(0, 0, -1.5 * um), size=(td.inf, td.inf, 3 * um)),
+    medium=SiO2,
+)
+
+mmi_region = td.Structure(
+    geometry=td.Box(center=(0, 0, 0.25 * um), size=(td.inf, 0.5 * um, 0.5 * um)),
+    medium=Si,
+)
+
+# Define simulation domain
+sim_size = (4 * um, 2 * um, 4 * um)  # (x, y, z)
+
+# Define source (TE-polarized waveguide mode source)
+source = td.ModeSource(
+    center=(-1.5 * um, 0, 0.25 * um),
+    size=(0, 0.4 * um, 0.5 * um),
+    source_time=td.GaussianPulse(freq0=td.C_0 / wavelength, fwidth=td.C_0 / (10 * wavelength)),
+    direction="+",
+    mode_spec=td.ModeSpec(num_modes=1, target_neff=3.45),
+)
+
+# Define field monitors
+monitor_xy = td.FieldMonitor(  # XY Plane Monitor (Top-down View)
+    center=(1.5 * um, 0, 0.25 * um),
+    size=(0, 1 * um, 0.5 * um),
+    freqs=[td.C_0 / wavelength],
+    name="field_xy",
+)
+
+monitor_yz = td.FieldMonitor(  # YZ Plane Monitor (Side View)
+    center=(0, 0, 0.25 * um),
+    size=(4 * um, 2 * um, 0),
+    freqs=[td.C_0 / wavelength],
+    name="field_yz",
+)
+
+monitor_zx = td.FieldMonitor(  # ZX Plane Monitor (Cross-sectional View)
+    center=(0, 0, 0),
+    size=(4 * um, 0, 4 * um),
+    freqs=[td.C_0 / wavelength],
+    name="field_zx",
+)
+
+# Define simulation setup
+sim = td.Simulation(
+    size=sim_size,
+    grid_spec=td.GridSpec.uniform(dl=0.1 * um),
+    structures=[substrate, mmi_region],
+    sources=[source],
+    monitors=[monitor_xy, monitor_yz, monitor_zx],
+    run_time=1e-17,  # 1 picosecond
+    boundary_spec=td.BoundarySpec(
+        x=td.Boundary.periodic(),
+        y=td.Boundary.periodic(),
+        z=td.Boundary.pml()
+    ),
+)
+
+fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+sim.plot_eps(z=0.25 * um, ax=axes[0])
+axes[0].set_title("Permittivity (XY Plane)")
+
+sim.plot_eps(y=0, ax=axes[1])
+axes[1].set_title("Permittivity (XZ Plane)")
+
+sim.plot_eps(x=0, ax=axes[2])
+axes[2].set_title("Permittivity (YZ Plane)")
+
+plt.show()
+# Run simulation
+fig, ax = plt.subplots(figsize=(4, 2))
+sim.plot(z=0.25 * um, ax=ax)
+plt.show()
+
+# job = td.web.Job(simulation=sim, task_name="mmi_splitter", verbose=True)
+# sim_data = job.run(path="mmi_splitter_data.hdf5")
+
+# # Plot field results for different planes
+# sim_data.plot_field("field_xy", "Ey", val="real")
+# plt.title("Field Distribution (XY Plane)")
+# plt.show()
+
+# sim_data.plot_field("field_yz", "Ey", val="real")
+# plt.title("Field Distribution (YZ Plane)")
+# plt.show()
+
+# sim_data.plot_field("field_zx", "Ey", val="real")
+# plt.title("Field Distribution (ZX Plane)")
+# plt.show()
